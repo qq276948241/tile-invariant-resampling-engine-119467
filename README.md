@@ -95,6 +95,48 @@ Caveats
 * Optimized access routines are used for `image.RGBA`, `image.NRGBA`, `image.RGBA64`, `image.NRGBA64`, `image.YCbCr`, `image.Gray`, and `image.Gray16` types. All other image types are accessed in a generic way that will result in slow processing speed.
 * JPEG images are stored in `image.YCbCr`. This image format stores data in a way that will decrease processing speed. A resize may be up to 2 times slower than with `image.RGBA`. 
 
+Deterministic pipeline
+----------------------
+
+Alongside the classic API above, the package provides a validated,
+tiled, cancellable pipeline built on the same interpolation kernels:
+
+```go
+pipe := resize.NewPipeline(resize.Options{
+    MaxMemoryBytes: 256 << 20, // fail instead of allocating past a budget
+    TileHeight:     64,        // rows per tile; 0 = single tile
+    Workers:        0,         // 0 = GOMAXPROCS
+})
+img, err := pipe.Resize(ctx, 1000, 0, src, resize.Lanczos3)
+```
+
+Guarantees, verified by `go test` and by the offline acceptance
+command `go run ./cmd/resizecheck` (deterministic output, non-zero
+exit on failure):
+
+* **Compatibility**: for valid inputs the pipeline produces
+  byte-identical output to `Resize`/`Thumbnail`, including the
+  historical `0.7` rounding bias for aspect-preserved dimensions and
+  the same-size fast path that returns the input image.
+* **Validation**: zero dimensions, dimensions above `MaxDimension`,
+  out-of-range interpolation functions, unsupported image types, and
+  truncated pixel buffers are rejected with typed sentinel errors
+  (`ErrZeroDimension`, `ErrDimensionOverflow`, `ErrUnsupportedSampler`,
+  `ErrUnsupportedColorModel`, `ErrTruncatedImage`, `ErrNilImage`)
+  instead of being silently tolerated. A failed call never returns a
+  partially computed image.
+* **Determinism**: filter weights are precomputed integer tables and
+  each output pixel is a pure function of them, so any tile size, tile
+  order, and worker count yields the same bytes.
+* **Cancellation**: the context is checked before every tile; on
+  cancellation the error wraps `context.Canceled`/
+  `context.DeadlineExceeded` and the result is nil.
+* **Memory**: `EstimateMemory` reports the peak allocation of a
+  request; `Options.MaxMemoryBytes` rejects requests over budget with
+  `ErrBudgetExhausted` before anything is allocated. Pipelines hold no
+  mutable state and share no buffers between calls, so concurrent use
+  is safe.
+
 
 Downsizing Samples
 -------
